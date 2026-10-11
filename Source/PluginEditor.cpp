@@ -39,6 +39,86 @@ void LedLamp::paint (Graphics& g)
 }
 
 //==============================================================================
+void ScopeDisplay::paint (Graphics& g)
+{
+    auto b = getLocalBounds().toFloat();
+    g.setColour (Colours::black);
+    g.fillRoundedRectangle (b, 8.f);
+    auto screen = b.reduced (3.f);
+
+    g.setGradientFill (ColourGradient (Colour (0xff0d2214), screen.getCentreX(), screen.getCentreY(),
+                                       Colour (0xff030805), screen.getX(), screen.getY(), true));
+    g.fillRoundedRectangle (screen, 6.f);
+
+    Path clip; clip.addRoundedRectangle (screen, 6.f);
+    g.saveState();
+    g.reduceClipRegion (clip);
+
+    // graticule
+    const Colour phosphor (0xff7dffa8);
+    g.setColour (phosphor.withAlpha (0.13f));
+    for (int i = 1; i < 8; ++i)
+        g.drawVerticalLine ((int) (screen.getX() + screen.getWidth() * (float) i / 8.f), screen.getY(), screen.getBottom());
+    for (int j = 1; j < 4; ++j)
+        g.drawHorizontalLine ((int) (screen.getY() + screen.getHeight() * (float) j / 4.f), screen.getX(), screen.getRight());
+    g.setColour (phosphor.withAlpha (0.28f));
+    g.drawHorizontalLine ((int) screen.getCentreY(), screen.getX(), screen.getRight());
+
+    // grab the latest samples
+    constexpr int N = 4096;
+    snap.resize (N);
+    const int head = proc.scopeHead.load (std::memory_order_acquire);
+    for (int k = 0; k < N; ++k)
+        snap[(size_t) k] = proc.scope[(size_t) ((head - N + k) & (FerriteProcessor::kScopeSize - 1))].load (std::memory_order_relaxed);
+
+    const int window = 2048 >> zoom;                      // 2048 / 1024 / 512 samples
+    int start = N - window;
+    for (int i = N - window - 1; i >= 1; --i)             // newest rising zero-crossing
+        if (snap[(size_t) i - 1] < 0.f && snap[(size_t) i] >= 0.f) { start = i; break; }
+
+    float peak = 0.f;
+    for (int i = 0; i < window; ++i) peak = std::max (peak, std::abs (snap[(size_t) (start + i)]));
+    if (peak > 0.002f)
+        gain += (jlimit (0.5f, 12.f, 0.85f / peak) - gain) * 0.15f;
+
+    const int px = (int) screen.getWidth();
+    const float cy = screen.getCentreY(), amp = screen.getHeight() * 0.45f;
+    Path wave;
+    for (int x = 0; x <= px; ++x)
+    {
+        const float idx = (float) start + (float) x / (float) px * (float) (window - 1);
+        const int i0 = (int) idx;
+        const float fr = idx - (float) i0;
+        const float smp = snap[(size_t) i0] * (1.f - fr) + snap[(size_t) std::min (i0 + 1, N - 1)] * fr;
+        const float y = cy - (peak > 0.002f ? smp * gain : 0.f) * amp;
+        if (x == 0) wave.startNewSubPath (screen.getX(), y); else wave.lineTo (screen.getX() + (float) x, y);
+    }
+    g.setColour (phosphor.withAlpha (0.12f));
+    g.strokePath (wave, PathStrokeType (6.f, PathStrokeType::curved, PathStrokeType::rounded));
+    g.setColour (phosphor.withAlpha (0.30f));
+    g.strokePath (wave, PathStrokeType (3.2f, PathStrokeType::curved, PathStrokeType::rounded));
+    g.setColour (Colour (0xffc8ffd8));
+    g.strokePath (wave, PathStrokeType (1.3f, PathStrokeType::curved, PathStrokeType::rounded));
+
+    // CRT scanlines + glass reflection
+    g.setColour (Colours::black.withAlpha (0.18f));
+    for (float y = screen.getY(); y < screen.getBottom(); y += 3.f)
+        g.fillRect (screen.getX(), y, screen.getWidth(), 1.f);
+    g.setGradientFill (ColourGradient (Colours::white.withAlpha (0.07f), 0.f, screen.getY(),
+                                       Colours::transparentWhite, 0.f, screen.getY() + screen.getHeight() * 0.45f, false));
+    g.fillRect (screen);
+    g.restoreState();
+
+    static const char* labels[] = { "ZOOM x0.5", "ZOOM x1", "ZOOM x2" };
+    g.setColour (phosphor.withAlpha (0.55f));
+    g.setFont (vintage::mono (9.f));
+    g.drawText (labels[zoom], screen.reduced (6.f, 3.f), Justification::bottomLeft, false);
+
+    g.setColour (Colour (0xff6b5a47));
+    g.drawRoundedRectangle (b.reduced (0.5f), 8.f, 1.5f);
+}
+
+//==============================================================================
 KnobControl::KnobControl (AudioProcessorValueTreeState& apvts, const String& id, const String& caption)
 {
     name.setText (caption, dontSendNotification);
@@ -50,10 +130,19 @@ KnobControl::KnobControl (AudioProcessorValueTreeState& apvts, const String& id,
 
     slider.setSliderStyle (Slider::RotaryHorizontalVerticalDrag);
     slider.setRotaryParameters (MathConstants<float>::pi * 1.25f, MathConstants<float>::pi * 2.75f, true);
-    slider.setTextBoxStyle (Slider::TextBoxBelow, true, kCell, 16);
+    slider.setTextBoxStyle (Slider::TextBoxBelow, true, kCell - 10, 16);
+    // LCD-style readout (set explicitly so it never depends on when the look-and-feel is attached)
+    slider.setColour (Slider::textBoxTextColourId,       v::amber);
+    slider.setColour (Slider::textBoxBackgroundColourId, Colour (0xff130d08));
+    slider.setColour (Slider::textBoxOutlineColourId,    Colour (0xff5a4a38));
     addAndMakeVisible (slider);
 
     attachment = std::make_unique<AudioProcessorValueTreeState::SliderAttachment> (apvts, id, slider);
+}
+
+void KnobControl::parentHierarchyChanged()
+{
+    slider.sendLookAndFeelChange();      // rebuild the readout with the editor's look-and-feel
 }
 
 void KnobControl::resized()
@@ -64,10 +153,9 @@ void KnobControl::resized()
 
 //==============================================================================
 FerriteEditor::FerriteEditor (FerriteProcessor& p)
-    : AudioProcessorEditor (&p), proc (p), led (p.activeVoices)
+    : AudioProcessorEditor (&p), proc (p), led (p.activeVoices), scope (p)
 {
     setLookAndFeel (&laf);
-    setSize (kWidth, kHeight);
     setResizable (false, false);
 
     // ---- layout of sections (x, y fixed; each knob cell is 62 px wide)
@@ -102,7 +190,9 @@ FerriteEditor::FerriteEditor (FerriteProcessor& p)
     addKnob (out, "glide", "GLIDE");     addKnob (out, "drift", "DRIFT");
     addKnob (out, "chorus", "ENSEMBLE"); addKnob (out, "master", "VOLUME");
 
+    addSection ("OSCILLOSCOPE", v::teal, { 322, 8, 332, kSecH });
     addAndMakeVisible (led);
+    addAndMakeVisible (scope);
 
     // ---- preset bar
     const Colour key (0xffcdbf9a), lcdBg (0xff130d08);
@@ -128,6 +218,7 @@ FerriteEditor::FerriteEditor (FerriteProcessor& p)
     startTimerHz (5);
 
     buildBackground();
+    setSize (kWidth, kHeight);          // last: triggers resized() once every child exists
 }
 
 FerriteEditor::~FerriteEditor() { stopTimer(); setLookAndFeel (nullptr); }
@@ -217,12 +308,13 @@ void FerriteEditor::resized()
         for (auto* k : s.knobs)
             k->setBounds (s.bounds.getX() + 8 + (i++) * kCell, s.bounds.getY() + 26, kCell, kKnobH);
     }
-    led.setBounds (572, 16, 34, 34);
-    prevBtn.setBounds (316, 20, 24, 26);
-    lcdBtn.setBounds  (342, 20, 178, 26);
-    nextBtn.setBounds (522, 20, 24, 26);
-    saveBtn.setBounds (342, 52, 86, 22);
-    initBtn.setBounds (434, 52, 86, 22);
+    scope.setBounds (330, 36, 316, 92);
+    led.setBounds (628, 6, 24, 24);
+    prevBtn.setBounds (48, 102, 22, 24);
+    lcdBtn.setBounds  (72, 102, 112, 24);
+    nextBtn.setBounds (186, 102, 22, 24);
+    saveBtn.setBounds (214, 102, 46, 24);
+    initBtn.setBounds (262, 102, 46, 24);
 }
 
 void FerriteEditor::paint (Graphics& g)
@@ -330,49 +422,41 @@ void FerriteEditor::buildBackground()
 
     // --- logo block
     g.setColour (Colours::black.withAlpha (0.55f));
-    g.setFont (v::serif (50.f, Font::bold | Font::italic).withExtraKerningFactor (0.06f));
-    g.drawText ("Ferrite", Rectangle<float> (50.f, 17.f, 330.f, 58.f), Justification::centredLeft, false);
+    g.setFont (v::serif (44.f, Font::bold | Font::italic).withExtraKerningFactor (0.04f));
+    g.drawText ("Ferrite", Rectangle<float> (50.f, 11.f, 190.f, 50.f), Justification::centredLeft, false);
     g.setColour (v::ivory);
-    g.drawText ("Ferrite", Rectangle<float> (48.f, 14.f, 330.f, 58.f), Justification::centredLeft, false);
+    g.drawText ("Ferrite", Rectangle<float> (48.f, 9.f, 190.f, 50.f), Justification::centredLeft, false);
 
-    Rectangle<float> badge (258.f, 22.f, 42.f, 42.f);
+    Rectangle<float> badge (240.f, 16.f, 38.f, 38.f);
     g.setGradientFill (ColourGradient (v::orange.brighter (0.2f), badge.getX(), badge.getY(), v::red, badge.getRight(), badge.getBottom(), false));
     g.fillRoundedRectangle (badge, 5.f);
     g.setColour (Colours::black.withAlpha (0.6f));
     g.drawRoundedRectangle (badge, 5.f, 1.2f);
     g.setColour (v::ivory);
-    g.setFont (v::serif (34.f, Font::bold));
+    g.setFont (v::serif (30.f, Font::bold));
     g.drawText ("8", badge, Justification::centred, false);
 
     g.setColour (v::cream.withAlpha (0.85f));
-    g.setFont (v::serif (11.f, Font::bold).withExtraKerningFactor (0.3f));
-    g.drawText ("POLYPHONIC  ANALOG  SYNTHESIZER", Rectangle<float> (50.f, 76.f, 420.f, 16.f), Justification::centredLeft, false);
+    g.setFont (v::serif (9.f, Font::bold).withExtraKerningFactor (0.2f));
+    g.drawText ("POLYPHONIC  ANALOG  SYNTHESIZER", Rectangle<float> (50.f, 62.f, 262.f, 14.f), Justification::centredLeft, false);
 
     // racing stripes
     const Colour stripes[] = { v::gold, v::orange, v::red, Colour (0xff6e2a1a) };
     for (int i = 0; i < 4; ++i)
     {
         g.setColour (stripes[i]);
-        g.fillRect (48.f, 102.f + (float) i * 5.f, 590.f - (float) i * 0.f, 3.f);
+        g.fillRect (48.f, 80.f + (float) i * 4.f, 260.f, 3.f);
     }
 
-    // preset legend
+    // scope LED legend
     g.setColour (v::cream.withAlpha (0.8f));
-    g.setFont (v::serif (9.5f, Font::bold).withExtraKerningFactor (0.2f));
-    g.drawText ("PRESET", Rectangle<float> (342.f, 6.f, 80.f, 12.f), Justification::centredLeft, false);
-
-    // LED legend + voice count plate
-    g.setColour (v::cream.withAlpha (0.8f));
-    g.setFont (v::serif (9.5f, Font::bold).withExtraKerningFactor (0.2f));
-    g.drawText ("VOICE", Rectangle<float> (562.f, 52.f, 54.f, 12.f), Justification::centred, false);
-    g.setColour (v::cream.withAlpha (0.55f));
-    g.setFont (v::mono (10.f));
-    g.drawText ("8 VOICES  /  LADDER VCF  /  ENSEMBLE", Rectangle<float> (50.f, 122.f, 420.f, 14.f), Justification::centredLeft, false);
+    g.setFont (v::serif (9.f, Font::bold).withExtraKerningFactor (0.2f));
+    g.drawText ("VOICE", Rectangle<float> (560.f, 8.f, 62.f, 22.f), Justification::centredRight, false);
 
     // footer
     g.setColour (v::cream.withAlpha (0.45f));
     g.setFont (v::serif (10.f, Font::bold).withExtraKerningFactor (0.25f));
-    g.drawText ("MODEL F-8   *   ANALOG MODELLED   *   SERIAL  No. 0001",
+    g.drawText ("MODEL F-8   *   8 VOICE ANALOG MODELLED   *   SERIAL  No. 0001",
                 Rectangle<float> (0.f, H - 26.f, W, 14.f), Justification::centred, false);
     drawScrew (g, { 62.f, H - 19.f }, 0.5f);
     drawScrew (g, { W - 62.f, H - 19.f }, 2.2f);

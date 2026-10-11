@@ -86,6 +86,7 @@ FerriteProcessor::FerriteProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "FERRITE8", createLayout())
 {
+    for (auto& x : scope) x.store (0.f, std::memory_order_relaxed);
 }
 
 void FerriteProcessor::prepareToPlay (double sampleRate, int)
@@ -152,6 +153,17 @@ void FerriteProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer& mid
         synth.render (L + pos, R + pos, buffer.getNumSamples() - pos);
 
     activeVoices.store (synth.getActiveVoiceCount());
+
+    // feed the oscilloscope (mono mix of the output)
+    {
+        int h = scopeHead.load (std::memory_order_relaxed);
+        for (int i = 0; i < buffer.getNumSamples(); ++i)
+        {
+            scope[(size_t) h].store (0.5f * (L[i] + R[i]), std::memory_order_relaxed);
+            h = (h + 1) & (kScopeSize - 1);
+        }
+        scopeHead.store (h, std::memory_order_release);
+    }
 }
 
 AudioProcessorEditor* FerriteProcessor::createEditor() { return new FerriteEditor (*this); }

@@ -64,7 +64,7 @@ public:
 
     juce::Font getTextButtonFont (juce::TextButton& b, int) override
     {
-        return b.getComponentID() == "lcd" ? vintage::mono (12.5f) : vintage::serif (11.f, juce::Font::bold);
+        return b.getComponentID() == "lcd" ? vintage::mono (11.5f) : vintage::serif (11.f, juce::Font::bold);
     }
 
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,

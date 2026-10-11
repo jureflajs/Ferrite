@@ -16,12 +16,29 @@ private:
 };
 
 //==============================================================================
+// Phosphor-green oscilloscope showing the plugin's output. Click to change zoom.
+class ScopeDisplay : public juce::Component, private juce::Timer
+{
+public:
+    explicit ScopeDisplay (FerriteProcessor& p) : proc (p) { startTimerHz (30); }
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override { zoom = (zoom + 1) % 3; }
+private:
+    void timerCallback() override { repaint(); }
+    FerriteProcessor& proc;
+    std::vector<float> snap;
+    float gain = 1.f;
+    int zoom = 1;                                   // 0: wide, 1: normal, 2: close-up
+};
+
+//==============================================================================
 // One knob: caption on top, rotary in the middle, readout underneath
 class KnobControl : public juce::Component
 {
 public:
     KnobControl (juce::AudioProcessorValueTreeState& apvts, const juce::String& paramID, const juce::String& caption);
     void resized() override;
+    void parentHierarchyChanged() override;
 
     juce::Label  name;
     juce::Slider slider;
@@ -63,6 +80,7 @@ private:
     std::vector<Section> sections;
     std::vector<std::unique_ptr<KnobControl>> knobs;
     LedLamp led;
+    ScopeDisplay scope;
     juce::TextButton prevBtn { "<" }, nextBtn { ">" }, lcdBtn, saveBtn { "SAVE" }, initBtn { "INIT" };
     juce::String shownPreset;
     juce::Image background;

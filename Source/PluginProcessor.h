@@ -35,6 +35,11 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     std::atomic<int> activeVoices { 0 };
 
+    // ---- oscilloscope feed (audio thread writes, editor reads) -------------
+    static constexpr int kScopeSize = 8192;                  // power of two
+    std::array<std::atomic<float>, kScopeSize> scope;
+    std::atomic<int> scopeHead { 0 };
+
     // ---- presets -----------------------------------------------------------
     static int          getNumFactoryPresets();
     static juce::String getFactoryPresetName (int index);
