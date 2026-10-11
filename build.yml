@@ -1,0 +1,42 @@
+name: Build Ferrite 8 (VST3)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-latest
+            name: macOS
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "build/Ferrite8_artefacts/Release/VST3/Ferrite 8.vst3" -DestinationPath Ferrite8-Windows-VST3.zip
+
+      - name: Sign ad-hoc and package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep -s - "build/Ferrite8_artefacts/Release/VST3/Ferrite 8.vst3"
+          ditto -c -k --keepParent "build/Ferrite8_artefacts/Release/VST3/Ferrite 8.vst3" Ferrite8-macOS-VST3.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ferrite8-${{ matrix.name }}-VST3
+          path: Ferrite8-*.zip
