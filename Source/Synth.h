@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <vector>
+#include "Eq.h"
 
 namespace ferrite
 {
@@ -30,6 +31,7 @@ struct Params
     float aA = 0.01f,  aD = 0.3f, aS = 0.8f, aR = 0.4f;
     float lfoRate = 5.f, lfoPitch = 0.f, lfoFilter = 0.f, lfoPwm = 0.f;
     float glide = 0.f, drift = 0.2f, chorus = 0.4f, master = 0.7f;
+    EqParams eq;
 };
 
 struct Frame            // per-sample modulation shared by all voices
@@ -295,6 +297,7 @@ public:
         resoSm.reset (sampleRate, 0.015);    resoSm.setCurrentAndTargetValue (0.f);
         masterSm.reset (sampleRate, 0.02);   masterSm.setCurrentAndTargetValue (0.7f);
         chorus.prepare (sr);
+        eq.prepare (sr);
         lfoRng.s = 0xBADC0FFEu;
         lfoPhase = 0.f; lfoSH = 0.f; bend = bendSm = mod = 0.f;
         sustain = false; lastNote = -1;
@@ -307,6 +310,7 @@ public:
         resoSm.setTargetValue (p.reso);
         masterSm.setTargetValue (p.master);
         glideCoef = p.glide < 0.002f ? 1.f : 1.f - std::exp (-1.f / (p.glide * sr));
+        eq.setParams (p.eq);
     }
 
     void setPitchBend (float semitones) noexcept { bend = semitones; }
@@ -379,6 +383,7 @@ public:
             const float m = masterSm.getNextValue() * 0.8f;
             float l, r;
             chorus.process (sum * m, params.chorus, l, r);
+            eq.process (l, r);
             L[i] = std::tanh (l);
             R[i] = std::tanh (r);
         }
@@ -404,6 +409,7 @@ private:
     Params params;
     Frame  frame;
     Chorus chorus;
+    ParametricEq eq;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> cutoffSm;
     juce::SmoothedValue<float> resoSm, masterSm;
     Rng   lfoRng;

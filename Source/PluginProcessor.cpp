@@ -15,6 +15,9 @@ AudioProcessorValueTreeState::ParameterLayout FerriteProcessor::createLayout()
     auto fmtHz     = [] (float v, int) { return v >= 1000.f ? String (v / 1000.f, 1) + " kHz" : String (roundToInt (v)) + " Hz"; };
     auto fmtLfo    = [] (float v, int) { return String (v, 1) + " Hz"; };
     auto fmtSemi   = [] (float v, int) { int i = roundToInt (v); return String (i > 0 ? "+" : "") + String (i) + " st"; };
+    auto fmtFreq   = [] (float v, int) { return v >= 1000.f ? String (v / 1000.f, 1) + "kHz" : String (roundToInt (v)) + "Hz"; };
+    auto fmtDb     = [] (float v, int) { return String (v > 0.049f ? "+" : "") + String (v, 1) + "dB"; };
+    auto fmtQ      = [] (float v, int) { return String (v, 2); };
     auto fmtCents  = [] (float v, int) { int i = roundToInt (v); return String (i > 0 ? "+" : "") + String (i) + " ct"; };
 
     auto skewed = [] (float lo, float hi, float centre)
@@ -78,6 +81,23 @@ AudioProcessorValueTreeState::ParameterLayout FerriteProcessor::createLayout()
     addF ("chorus", "Ensemble", unit, 0.4f,  fmtPct);
     addF ("master", "Volume",   unit, 0.7f,  fmtPct);
 
+    // Parametric EQ: low shelf, two bells, high shelf
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "eqOn", 1 }, "EQ On", true));
+    const NormalisableRange<float> eqGain (-18.f, 18.f, 0.1f);
+    const NormalisableRange<float> shelfQ (0.3f, 1.5f);
+    addF ("eqLowF",  "EQ Low Freq",   skewed (30.f, 600.f, 130.f),     120.f,  fmtFreq);
+    addF ("eqLowG",  "EQ Low Gain",   eqGain, 0.f, fmtDb);
+    addF ("eqLowQ",  "EQ Low Q",      shelfQ, 0.71f, fmtQ);
+    addF ("eqM1F",   "EQ Mid 1 Freq", skewed (100.f, 3000.f, 520.f),   500.f,  fmtFreq);
+    addF ("eqM1G",   "EQ Mid 1 Gain", eqGain, 0.f, fmtDb);
+    addF ("eqM1Q",   "EQ Mid 1 Q",    skewed (0.3f, 10.f, 1.5f), 1.f, fmtQ);
+    addF ("eqM2F",   "EQ Mid 2 Freq", skewed (800.f, 12000.f, 3200.f), 3000.f, fmtFreq);
+    addF ("eqM2G",   "EQ Mid 2 Gain", eqGain, 0.f, fmtDb);
+    addF ("eqM2Q",   "EQ Mid 2 Q",    skewed (0.3f, 10.f, 1.5f), 1.f, fmtQ);
+    addF ("eqHighF", "EQ High Freq",  skewed (2000.f, 18000.f, 7000.f), 8000.f, fmtFreq);
+    addF ("eqHighG", "EQ High Gain",  eqGain, 0.f, fmtDb);
+    addF ("eqHighQ", "EQ High Q",     shelfQ, 0.71f, fmtQ);
+
     return { p.begin(), p.end() };
 }
 
@@ -111,6 +131,14 @@ ferrite::Params FerriteProcessor::readParams() const
     p.aA = v ("aA");  p.aD = v ("aD");  p.aS = v ("aS");  p.aR = v ("aR");
     p.lfoRate = v ("lfoRate");  p.lfoPitch = v ("lfoPitch");  p.lfoFilter = v ("lfoFilter");  p.lfoPwm = v ("lfoPwm");
     p.glide = v ("glide");  p.drift = v ("drift");  p.chorus = v ("chorus");  p.master = v ("master");
+
+    static const char* eqIds[ferrite::kEqBands][3] = { { "eqLowF", "eqLowG", "eqLowQ" }, { "eqM1F", "eqM1G", "eqM1Q" },
+                                                      { "eqM2F", "eqM2G", "eqM2Q" },   { "eqHighF", "eqHighG", "eqHighQ" } };
+    p.eq.on = v ("eqOn") > 0.5f;
+    for (int b = 0; b < ferrite::kEqBands; ++b)
+    {
+        p.eq.freq[b] = v (eqIds[b][0]);  p.eq.gain[b] = v (eqIds[b][1]);  p.eq.q[b] = v (eqIds[b][2]);
+    }
     return p;
 }
 
@@ -119,10 +147,20 @@ void FerriteProcessor::handleMidi (const MidiMessage& m)
     if (m.isNoteOn())                synth.noteOn (m.getNoteNumber(), m.getFloatVelocity());
     else if (m.isNoteOff())          synth.noteOff (m.getNoteNumber());
     else if (m.isAllNotesOff() || m.isAllSoundOff()) synth.allNotesOff (m.isAllSoundOff());
-    else if (m.isPitchWheel())       synth.setPitchBend (((float) m.getPitchWheelValue() - 8192.f) / 8192.f * 2.f);
+    else if (m.isPitchWheel())
+    {
+        appliedBend = jlimit (-1.f, 1.f, ((float) m.getPitchWheelValue() - 8192.f) / 8192.f);
+        pitchBendNorm.store (appliedBend);                      // so the on-screen wheel follows the host
+        synth.setPitchBend (appliedBend * 2.f);
+    }
     else if (m.isController())
     {
-        if (m.getControllerNumber() == 1)  synth.setModWheel ((float) m.getControllerValue() / 127.f);
+        if (m.getControllerNumber() == 1)
+        {
+            appliedMod = (float) m.getControllerValue() / 127.f;
+            modWheelNorm.store (appliedMod);
+            synth.setModWheel (appliedMod);
+        }
         if (m.getControllerNumber() == 64) synth.setSustain (m.getControllerValue() >= 64);
     }
 }
@@ -134,6 +172,16 @@ void FerriteProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer& mid
     if (buffer.getNumChannels() < 2) return;
 
     synth.setParams (readParams());
+
+    // wheels moved on screen since the last block
+    {
+        const float pb = pitchBendNorm.load(), mw = modWheelNorm.load();
+        if (pb != appliedBend) { appliedBend = pb; synth.setPitchBend (pb * 2.f); }
+        if (mw != appliedMod)  { appliedMod  = mw; synth.setModWheel (mw); }
+    }
+
+    // merge notes played on the on-screen keyboard into the MIDI stream
+    keyboardState.processNextMidiBuffer (midi, 0, buffer.getNumSamples(), true);
 
     float* L = buffer.getWritePointer (0);
     float* R = buffer.getWritePointer (1);

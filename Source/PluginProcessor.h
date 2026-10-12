@@ -35,6 +35,14 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     std::atomic<int> activeVoices { 0 };
 
+    // On-screen keyboard <-> audio thread (also lights the keys for MIDI coming from the host)
+    juce::MidiKeyboardState keyboardState;
+
+    // Performance wheels. Single source of truth: the on-screen wheels and incoming host MIDI
+    // both write here, and the audio thread applies whatever changed.
+    std::atomic<float> pitchBendNorm { 0.f };      // -1 .. +1  (+/- 2 semitones)
+    std::atomic<float> modWheelNorm  { 0.f };      //  0 .. 1
+
     // ---- oscilloscope feed (audio thread writes, editor reads) -------------
     static constexpr int kScopeSize = 8192;                  // power of two
     std::array<std::atomic<float>, kScopeSize> scope;
@@ -64,6 +72,7 @@ private:
     juce::File presetFile (const juce::String& name) const;
 
     ferrite::Synth synth;
+    float appliedBend = 0.f, appliedMod = 0.f;     // audio thread only
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FerriteProcessor)
 };
